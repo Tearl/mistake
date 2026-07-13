@@ -1,0 +1,34 @@
+# CodeBuild: mistake-pr-deploy
+# 触发：GitHub webhook PULL_REQUEST_CREATED / UPDATED / REOPENED
+# 需要：privileged mode（docker build）、VPC 配置（连 RDS）、GitHub 源连接
+# 项目级 env（在 CodeBuild 项目里配，非密文）：
+#   ACCOUNT REGION CLUSTER ALB_LISTENER_ARN VPC_ID SUBNETS TASK_SG
+#   BASE_DOMAIN(api.toton123.xyz) PAGES_PROJECT(mistake) PAGES_DOMAIN(mistake-381.pages.dev)
+#   GO_IMAGE(m.daocloud.io/docker.io/library/golang:1.26 或官方)
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      # postgresql 客户端（CREATE DATABASE / 查 pg_database）
+      - (command -v psql) || (yum install -y postgresql15 || amazon-linux-extras install -y postgresql14 || yum install -y postgresql)
+  pre_build:
+    commands:
+      # 从 webhook 变量解析 PR 号与源分支
+      - export PR="${CODEBUILD_WEBHOOK_TRIGGER#pr/}"
+      - export BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
+      - 'echo "PR=$PR BRANCH=$BRANCH"'
+      - test -n "$PR" && test "$PR" != "$CODEBUILD_WEBHOOK_TRIGGER" || (echo "not a PR build, abort" && exit 1)
+      - export ECR="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR"
+  build:
+    commands:
+      # 构建 Go 后端镜像（arm64，与任务 runtimePlatform 一致），tag = pr-<N>
+      - cd apps/server-go
+      - docker build --platform linux/arm64 --build-arg GO_IMAGE="${GO_IMAGE:-golang:1.26}" -t "mistake-server:pr-${PR}" .
+      - docker tag "mistake-server:pr-${PR}" "${ECR}/mistake-server:pr-${PR}"
+      - docker push "${ECR}/mistake-server:pr-${PR}"
+      - cd "$CODEBUILD_SRC_DIR"
+      # 编排：建库/任务定义/TG/监听规则/服务 + 构建部署前端
+      - bash deploy/aws/pr-preview/deploy.sh
