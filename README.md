@@ -1,109 +1,62 @@
-# mistake
+# 拾错 · 错题本（mistake）
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Router, Hono, TRPC, and more.
+拍照上传错题 → AI（通义千问-VL）识别归类 → 入库 → 随机抽题复习 → 学习统计。
+由微信小程序 `mistake-mini` 移植为 Web：前端 React，后端 Go。
 
-## Features
+- **前端** `apps/web`：React + TanStack Router + TailwindCSS（neo-brutalist 风），shadcn/ui 在 `packages/ui`
+- **后端** `apps/server-go`：Go + chi + pgx/sqlc + PostgreSQL，AI 走通义千问 DashScope，图片存本地磁盘
+- 数据层用 REST 对接（前端 `src/lib/api.ts`）。**暂无鉴权**，单用户模式（固定 `dev-user`）
 
-- **TypeScript** - For type safety and improved developer experience
-- **TanStack Router** - File-based routing with full type safety
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Shared UI package** - shadcn/ui primitives live in `packages/ui`
-- **Hono** - Lightweight, performant server framework
-- **tRPC** - End-to-end type-safe APIs
-- **Node.js** - Runtime environment
-- **Drizzle** - TypeScript-first ORM
-- **PostgreSQL** - Database engine
-- **Authentication** - Better-Auth
+> 脚手架自带的 TS 后端（`apps/server` Hono/tRPC）与 `packages/{api,auth,db}` 已删除，被 `apps/server-go` 取代。
 
-## Getting Started
+## 快速开始
 
-First, install the dependencies:
+### 1. 前端依赖
 
 ```bash
 npm install
 ```
 
-## Database Setup
-
-This project uses PostgreSQL with Drizzle ORM.
-
-1. Make sure you have a PostgreSQL database set up.
-2. Update your `apps/server/.env` file with your PostgreSQL connection details.
-
-3. Apply the schema to your database:
+### 2. 后端（Go）—— 见 `apps/server-go/README.md`
 
 ```bash
-npm run db:push
+brew install go sqlc golang-migrate postgresql@16
+brew services start postgresql@16
+createdb mistake
+
+cd apps/server-go
+# 按需修改 .env（DATABASE_URL 的用户名、DASHSCOPE_API_KEY）
+migrate -path migrations -database "$DATABASE_URL" up   # 建表 + seed dev 用户
+go run .                                                # 启动 :3000
 ```
 
-Then, run the development server:
+> AI 识别/举一反三需要 `DASHSCOPE_API_KEY`（阿里云百炼）。留空时这两个接口返回 503，其余功能（CRUD/抽题/统计/导出）正常。
+
+### 3. 前端
 
 ```bash
-npm run dev
+cd apps/web
+npm run dev:bare        # 或在根目录 npm run dev:web
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-The API is running at [http://localhost:3000](http://localhost:3000).
+打开 [http://localhost:3001](http://localhost:3001)，后端在 [http://localhost:3000](http://localhost:3000)。
 
-## UI Customization
-
-React web apps in this stack share shadcn/ui primitives through `packages/ui`.
-
-- Change design tokens and global styles in `packages/ui/src/styles/globals.css`
-- Update shared primitives in `packages/ui/src/components/*`
-- Adjust shadcn aliases or style config in `packages/ui/components.json` and `apps/web/components.json`
-
-### Add more shared components
-
-Run this from the project root to add more primitives to the shared UI package:
-
-```bash
-npx shadcn@latest add accordion dialog popover sheet table -c packages/ui
-```
-
-Import shared components like this:
-
-```tsx
-import { Button } from "@mistake/ui/components/button";
-```
-
-### Add app-specific blocks
-
-If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
-
-## Deployment
-
-### Cloudflare via Alchemy
-
-- Target: web
-- Dev: npm run dev
-- Deploy: npm run deploy
-- Destroy: npm run destroy
-
-For more details, see the guide on [Deploying to Cloudflare with Alchemy](https://www.better-t-stack.dev/docs/guides/cloudflare-alchemy).
-
-## Project Structure
+## 项目结构
 
 ```
 mistake/
 ├── apps/
-│   ├── web/         # Frontend application (React + TanStack Router)
-│   └── server/      # Backend API (Hono, TRPC)
+│   ├── web/         # 前端（React + TanStack Router），src/lib/api.ts 调用 Go 后端
+│   └── server-go/   # Go 后端（chi + pgx/sqlc + Postgres + 通义千问 + 本地存图）
 ├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   ├── api/         # API layer / business logic
-│   ├── auth/        # Authentication configuration & logic
-│   └── db/          # Database schema & queries
+│   ├── ui/          # 共享 shadcn/ui 组件与样式
+│   ├── env/         # 环境变量校验（web 用 VITE_SERVER_URL）
+│   ├── config/      # 共享 tsconfig
+│   └── infra/       # Cloudflare 部署（alchemy）
 ```
 
-## Available Scripts
+## UI 定制
 
-- `npm run dev`: Start all applications in development mode
-- `npm run build`: Build all applications
-- `npm run dev:web`: Start only the web application
-- `npm run dev:server`: Start only the server
-- `npm run check-types`: Check TypeScript types across all apps
-- `npm run db:push`: Push schema changes to database
-- `npm run db:generate`: Generate database client/types
-- `npm run db:migrate`: Run database migrations
-- `npm run db:studio`: Open database studio UI
+- 全局设计 token / 样式：`packages/ui/src/styles/globals.css`
+- 品牌配色（拾错的 neo-brutalist 大色块）：`apps/web/src/styles/mistake.css` + `apps/web/src/lib/theme.ts`
+- 共享组件：`packages/ui/src/components/*`，引入方式 `import { Button } from "@mistake/ui/components/button"`

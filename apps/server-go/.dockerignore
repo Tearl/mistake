@@ -1,0 +1,6 @@
+uploads/
+.env
+server-go
+*.log
+.git
+README.md

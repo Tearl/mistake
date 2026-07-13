@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:bare"],
+      "port": 3001,
+      "cwd": "apps/web"
+    },
+    {
+      "name": "server-go",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "."],
+      "port": 3000,
+      "cwd": "apps/server-go"
+    }
+  ]
+}

@@ -11,11 +11,6 @@
     "build": "npm run build --workspaces --if-present",
     "check-types": "npm run check-types --workspaces --if-present",
     "dev:web": "npm run dev --workspace web",
-    "dev:server": "npm run dev --workspace server",
-    "db:push": "npm run db:push --workspace @mistake/db",
-    "db:studio": "npm run db:studio --workspace @mistake/db",
-    "db:generate": "npm run db:generate --workspace @mistake/db",
-    "db:migrate": "npm run db:migrate --workspace @mistake/db",
     "deploy": "npm run deploy --workspace @mistake/infra",
     "destroy": "npm run destroy --workspace @mistake/infra"
   },

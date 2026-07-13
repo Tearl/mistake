@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS review_logs;
+DROP TABLE IF EXISTS mistakes;
+DROP TABLE IF EXISTS users;

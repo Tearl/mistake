@@ -1,17 +1,12 @@
 import { Toaster } from "@mistake/ui/components/sonner";
 import type { QueryClient } from "@tanstack/react-query";
-import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { HeadContent, Outlet, createRootRouteWithContext } from "@tanstack/react-router";
-import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 
-import Header from "@/components/header";
-import { ThemeProvider } from "@/components/theme-provider";
-import type { trpc } from "@/utils/trpc";
+import TabBar from "@/components/tab-bar";
 
 import "../index.css";
 
 export interface RouterAppContext {
-  trpc: typeof trpc;
   queryClient: QueryClient;
 }
 
@@ -20,11 +15,15 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
   head: () => ({
     meta: [
       {
-        title: "mistake",
+        title: "拾错 · 错题本",
       },
       {
         name: "description",
-        content: "mistake is a web application",
+        content: "拍照上传错题，AI 识别归类，随机抽题复习，学习统计。",
+      },
+      {
+        name: "viewport",
+        content: "width=device-width, initial-scale=1, maximum-scale=1",
       },
     ],
     links: [
@@ -40,20 +39,11 @@ function RootComponent() {
   return (
     <>
       <HeadContent />
-      <ThemeProvider
-        attribute="class"
-        defaultTheme="dark"
-        disableTransitionOnChange
-        storageKey="vite-ui-theme"
-      >
-        <div className="grid grid-rows-[auto_1fr] h-svh">
-          <Header />
-          <Outlet />
-        </div>
-        <Toaster richColors />
-      </ThemeProvider>
-      <TanStackRouterDevtools position="bottom-left" />
-      <ReactQueryDevtools position="bottom" buttonPosition="bottom-right" />
+      <div className="mistake-app relative mx-auto min-h-svh max-w-[448px] pb-[calc(72px+env(safe-area-inset-bottom))] shadow-xl">
+        <Outlet />
+      </div>
+      <TabBar />
+      <Toaster richColors position="top-center" />
     </>
   );
 }
