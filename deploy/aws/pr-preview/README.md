@@ -132,6 +132,8 @@ CLI 版命令见文末附录。
 6. 销毁：合并/关闭 PR → `mistake-pr-teardown` 触发 → 确认服务/TG/监听规则/`mistake_pr_<N>` 库/ECR tag 全没了，`curl` 后端域名 404/503。
 
 ## 排查
+- **ECS 任务起不来 `ResourceInitializationError ... ssm:GetParameters ... /mistake/pr/<N>/DATABASE_URL ... AccessDeniedException`**：ECS 执行角色 `mistake-ecs-exec-role` 当初只授权了生产那 3 个固定 SSM 参数，没含 per-PR 路径。**一次性修**（两条 CI 路都需要）：给其内联策略 `read-mistake-ssm` 的 Resource 加一条 `arn:aws:ssm:us-east-1:496251221975:parameter/mistake/pr/*`，再 `aws ecs update-service --cluster mistake --service mistake-pr-<N> --force-new-deployment`。（已于 2026-07 修复。）
+- **前端 wrangler 步报 `Wrangler requires at least Node.js v22`**：GHA workflow 的 `actions/setup-node` 要用 `node-version: 22`（wrangler@4 要求 Node≥22）。
 - **webhook 返回 400 `Cannot have more than 0 builds in queue for the account`**（`AccountLimitExceededException`）：新 AWS 账号对 CodeBuild 的**有效并发构建被封为 0**（反滥用），Service Quotas 显示的 10 是默认值、非生效值，`request-service-quota-increase` 也会因“已是 10”被拒。**唯一解法**：AWS 控制台开工单（Account and billing 类，免费）请求为该账号启用 CodeBuild 并发构建。解除后推一次分支（`PULL_REQUEST_UPDATED`）即自动重跑。诊断命令：`aws codebuild start-build --project-name mistake-pr-deploy --source-version pr/<N>`。
 - **构建卡在 docker build**：确认 deploy 项目开了 Privileged。
 - **`CREATE DATABASE` 超时**：CodeBuild 没进 VPC 或 RDS SG 没放行 `mistake-codebuild-sg`。

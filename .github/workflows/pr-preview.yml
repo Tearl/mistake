@@ -56,7 +56,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22   # wrangler@4 要求 Node ≥ 22
 
       - name: Orchestrate backend + frontend preview
         env:
