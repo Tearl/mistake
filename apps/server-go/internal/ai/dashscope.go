@@ -160,16 +160,23 @@ func (c *Client) Similar(ctx context.Context, in SimilarInput) ([]SimilarItem, e
 		in.Subject, n, orDefault(kp, "与原题一致"), orDefault(in.Difficulty, "中"),
 		in.QuestionType, orDefault(in.OcrText, "（仅有图片，无文字）"), orDefault(in.Answer, "（无）"), avoidBlock)
 
+	// max_tokens 需足够大：变式题+解析可能较长，过小会把 JSON 数组截断（末尾缺 ]）
+	// 导致解析失败。qwen-plus 支持更大输出，count=1 时 4000 绰绰有余。
 	body := map[string]any{
 		"model":      textModel,
 		"messages":   []any{map[string]any{"role": "user", "content": prompt}},
-		"max_tokens": 1500,
+		"max_tokens": 4000,
 	}
 	text, err := c.chat(ctx, body)
 	if err != nil {
 		return nil, err
 	}
 	arrStr := extractJSON(text, '[', ']')
+	if arrStr == "" {
+		// 兜底：模型仍可能把数组截断（缺收尾 ]）。抢救出已完整的对象，
+		// 补上 ] 再解析，尽量返回部分结果而不是整体报错。
+		arrStr = salvageJSONArray(text)
+	}
 	if arrStr == "" {
 		return nil, fmt.Errorf("parse failed: %s", truncate(text, 200))
 	}
@@ -258,6 +265,18 @@ func extractJSON(text string, open, close byte) string {
 		return ""
 	}
 	return cleaned[start : end+1]
+}
+
+// salvageJSONArray 从被截断的响应里抢救合法结果：取第一个 '[' 到最后一个完整对象的
+// '}' 之间的内容，补上 ']' 组成合法数组（丢弃末尾被截断的半个对象）。救不出则返回 ""。
+func salvageJSONArray(text string) string {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(text, "```json", ""), "```", ""))
+	start := strings.IndexByte(cleaned, '[')
+	lastObj := strings.LastIndexByte(cleaned, '}')
+	if start == -1 || lastObj == -1 || lastObj < start {
+		return ""
+	}
+	return cleaned[start:lastObj+1] + "]"
 }
 
 func orDefault(s, def string) string {
