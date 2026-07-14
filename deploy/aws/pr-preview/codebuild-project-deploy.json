@@ -1,0 +1,37 @@
+{
+  "name": "mistake-pr-deploy",
+  "description": "PR 预览环境：构建 Go 镜像 + 部署 ECS + 部署前端预览",
+  "source": {
+    "type": "GITHUB",
+    "location": "https://github.com/Tearl/mistake.git",
+    "buildspec": "deploy/aws/pr-preview/buildspec-deploy.yml",
+    "reportBuildStatus": true
+  },
+  "artifacts": { "type": "NO_ARTIFACTS" },
+  "environment": {
+    "type": "ARM_CONTAINER",
+    "image": "aws/codebuild/amazonlinux2-aarch64-standard:3.0",
+    "computeType": "BUILD_GENERAL1_SMALL",
+    "privilegedMode": true,
+    "environmentVariables": [
+      { "name": "ACCOUNT", "value": "496251221975" },
+      { "name": "REGION", "value": "us-east-1" },
+      { "name": "CLUSTER", "value": "mistake" },
+      { "name": "ALB_LISTENER_ARN", "value": "arn:aws:elasticloadbalancing:us-east-1:496251221975:listener/app/mistake-alb/a48a24d45f5a8de7/ee90628b7c1563fa" },
+      { "name": "VPC_ID", "value": "vpc-0c36b43361100250a" },
+      { "name": "SUBNETS", "value": "subnet-051776f835b1b44da,subnet-0b62c3c3da2bf7fbd,subnet-0f3f95ddb4ab8d5c5" },
+      { "name": "TASK_SG", "value": "sg-0b23ad3efd38c816a" },
+      { "name": "BASE_DOMAIN", "value": "api.toton123.xyz" },
+      { "name": "PAGES_PROJECT", "value": "mistake" },
+      { "name": "PAGES_DOMAIN", "value": "mistake-381.pages.dev" },
+      { "name": "CLOUDFLARE_ACCOUNT_ID", "value": "f350f1151c3d19066f82fd0c42e8ecd2" },
+      { "name": "GO_IMAGE", "value": "public.ecr.aws/docker/library/golang:1.26" }
+    ]
+  },
+  "serviceRole": "arn:aws:iam::496251221975:role/mistake-codebuild-role",
+  "vpcConfig": {
+    "vpcId": "vpc-0c36b43361100250a",
+    "subnets": ["subnet-051776f835b1b44da", "subnet-0b62c3c3da2bf7fbd", "subnet-0f3f95ddb4ab8d5c5"],
+    "securityGroupIds": ["sg-034dd7da68ec36c3d"]
+  }
+}

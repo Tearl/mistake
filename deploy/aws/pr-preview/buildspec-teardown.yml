@@ -1,0 +1,17 @@
+# CodeBuild: mistake-pr-teardown
+# 触发：GitHub webhook PULL_REQUEST_MERGED / PULL_REQUEST_CLOSED
+# 需要：VPC 配置（连 RDS 做 DROP DATABASE）；不需要 privileged。
+# 项目级 env：ACCOUNT REGION CLUSTER ALB_LISTENER_ARN BASE_DOMAIN
+version: 0.2
+phases:
+  install:
+    commands:
+      - (command -v psql) || (yum install -y postgresql15 || amazon-linux-extras install -y postgresql14 || yum install -y postgresql)
+  pre_build:
+    commands:
+      - export PR="${CODEBUILD_WEBHOOK_TRIGGER#pr/}"
+      - 'echo "teardown PR=$PR (event=$CODEBUILD_WEBHOOK_EVENT)"'
+      - test -n "$PR" && test "$PR" != "$CODEBUILD_WEBHOOK_TRIGGER" || (echo "not a PR build, abort" && exit 1)
+  build:
+    commands:
+      - bash deploy/aws/pr-preview/teardown.sh

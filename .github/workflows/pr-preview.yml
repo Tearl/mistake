@@ -1,0 +1,84 @@
+name: pr-preview
+
+# 每个 PR 拉起独立预览（opened/synchronize/reopened），关闭/合并时销毁（closed）。
+# 编排逻辑复用 deploy/aws/pr-preview/{deploy,teardown}.sh（DB_VIA_LAMBDA=1 走 VPC Lambda）。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  id-token: write   # 换取 OIDC token 假设 AWS 角色
+  contents: read
+
+concurrency:              # 同一 PR 串行，避免并发部署互相打架
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  REGION: us-east-1
+  ACCOUNT: "496251221975"
+  CLUSTER: mistake
+  ALB_LISTENER_ARN: arn:aws:elasticloadbalancing:us-east-1:496251221975:listener/app/mistake-alb/a48a24d45f5a8de7/ee90628b7c1563fa
+  VPC_ID: vpc-0c36b43361100250a
+  SUBNETS: subnet-051776f835b1b44da,subnet-0b62c3c3da2bf7fbd,subnet-0f3f95ddb4ab8d5c5
+  TASK_SG: sg-0b23ad3efd38c816a
+  BASE_DOMAIN: api.toton123.xyz
+  PAGES_PROJECT: mistake
+  PAGES_DOMAIN: mistake-381.pages.dev
+  DB_VIA_LAMBDA: "1"
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 预览后端跑 x86（生产仍 arm64，互不影响）；amd64 在 amd64 runner 上原生构建，
+      # 无需 QEMU，比 arm64 模拟快很多。
+      - name: Build & push amd64 image
+        run: |
+          PR=${{ github.event.number }}
+          ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+          docker buildx build --platform linux/amd64 \
+            --build-arg GO_IMAGE=public.ecr.aws/docker/library/golang:1.26 \
+            --provenance=false \
+            -t "$ECR/mistake-server:pr-$PR" --push apps/server-go
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22   # wrangler@4 要求 Node ≥ 22
+
+      - name: Orchestrate backend + frontend preview
+        env:
+          PR: ${{ github.event.number }}
+          BRANCH: ${{ github.head_ref }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash deploy/aws/pr-preview/deploy.sh
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Teardown preview
+        env:
+          PR: ${{ github.event.number }}
+        run: bash deploy/aws/pr-preview/teardown.sh

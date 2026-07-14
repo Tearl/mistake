@@ -1,0 +1,39 @@
+{
+  "family": "mistake-pr-__PR__",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-ecs-exec-role",
+  "taskRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-task-role",
+  "containerDefinitions": [
+    {
+      "name": "server",
+      "image": "__ACCOUNT__.dkr.ecr.__REGION__.amazonaws.com/mistake-server:pr-__PR__",
+      "portMappings": [{ "containerPort": 3000 }],
+      "essential": true,
+      "environment": [
+        { "name": "PORT", "value": "3000" },
+        { "name": "STORAGE", "value": "s3" },
+        { "name": "S3_BUCKET", "value": "mistake-uploads-__ACCOUNT__" },
+        { "name": "AWS_REGION", "value": "__REGION__" },
+        { "name": "S3_PUBLIC_BASE_URL", "value": "https://mistake-uploads-__ACCOUNT__.s3.__REGION__.amazonaws.com" },
+        { "name": "CORS_ORIGIN", "value": "__CORS__" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",      "valueFrom": "arn:aws:ssm:__REGION__:__ACCOUNT__:parameter/mistake/pr/__PR__/DATABASE_URL" },
+        { "name": "DASHSCOPE_API_KEY", "valueFrom": "arn:aws:ssm:__REGION__:__ACCOUNT__:parameter/mistake/DASHSCOPE_API_KEY" },
+        { "name": "API_KEY",           "valueFrom": "arn:aws:ssm:__REGION__:__ACCOUNT__:parameter/mistake/API_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/mistake",
+          "awslogs-region": "__REGION__",
+          "awslogs-stream-prefix": "pr-__PR__"
+        }
+      }
+    }
+  ]
+}
