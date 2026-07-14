@@ -67,6 +67,7 @@ func main() {
 		r.Post("/recognize", srv.Recognize)
 		r.Post("/similar", srv.Similar)
 		r.Post("/export", srv.Export)
+		r.Get("/cloudmap-hello", srv.CloudMapHello) // 作业二：ECS 经 Cloud Map 发现并调 Lambda
 	})
 
 	// 本地模式：静态提供上传的图片（s3 模式由 S3 直接提供，无此路由）
