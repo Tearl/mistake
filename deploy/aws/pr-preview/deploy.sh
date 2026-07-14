@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # 为一个 PR 拉起/更新独立预览环境（幂等，可被 PR synchronize 反复调用）。
-# 由 buildspec-deploy.yml 在 CodeBuild 里调用；镜像 pr-$PR 此时已推到 ECR。
+# 两种执行环境通吃：
+#   - GitHub Actions：workflow 里 env 给 PR/BRANCH，镜像已用 buildx 推 ECR，DB_VIA_LAMBDA=1
+#   - CodeBuild：buildspec-deploy.yml 导出 PR/BRANCH，镜像已推 ECR，不设 DB_VIA_LAMBDA（走 psql）
 #
-# 依赖环境变量（CodeBuild 项目 env / buildspec 导出）：
-#   PR                PR 号（从 $CODEBUILD_WEBHOOK_TRIGGER 解析）
-#   BRANCH            源分支名（$CODEBUILD_WEBHOOK_HEAD_REF 去掉 refs/heads/）
+# 依赖环境变量：
+#   PR                PR 号（GHA: ${{github.event.number}}；CodeBuild: 由 buildspec 解析）
+#   BRANCH            源分支名（GHA: github.head_ref；CodeBuild: 去掉 refs/heads/）
 #   ACCOUNT REGION    AWS 账号 / 区域
 #   CLUSTER           ECS 集群（mistake）
 #   ALB_LISTENER_ARN  443 监听器 ARN
@@ -14,6 +16,8 @@
 #   BASE_DOMAIN       api.toton123.xyz
 #   PAGES_PROJECT     Cloudflare Pages 项目名（mistake）
 #   PAGES_DOMAIN      mistake-381.pages.dev
+#   DB_VIA_LAMBDA     =1 时用 VPC Lambda 建/删库（GHA）；否则用 psql（CodeBuild）
+#   DB_LAMBDA         Lambda 名，默认 mistake-pr-db
 # SSM 取值：/mistake/DATABASE_URL(复用为 master) /mistake/API_KEY /mistake/CF_API_TOKEN
 set -euo pipefail
 
@@ -44,11 +48,30 @@ ssm() { aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Va
 RDS_MASTER_URL="$(ssm /mistake/DATABASE_URL)"
 API_KEY="$(ssm /mistake/API_KEY)"
 
-# ── 1. 建 per-PR 逻辑库（幂等：先查 pg_database）─────────────────────────
-if ! psql "$RDS_MASTER_URL" -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
-  echo "== create database ${DB_NAME}"
-  psql "$RDS_MASTER_URL" -c "CREATE DATABASE ${DB_NAME}"
-fi
+# 建/删 per-PR 逻辑库。DB_VIA_LAMBDA=1 走 VPC Lambda（GHA：runner 在 VPC 外连不到私有
+# RDS）；否则用 psql（CodeBuild/VPC 内）。$1=create|drop。两条路都幂等。
+pr_db() {
+  if [ "${DB_VIA_LAMBDA:-0}" = "1" ]; then
+    echo "== db $1 via lambda ${DB_LAMBDA:-mistake-pr-db} (pr=${PR})"
+    local tmp err; tmp="$(mktemp)"
+    err="$(aws lambda invoke --function-name "${DB_LAMBDA:-mistake-pr-db}" \
+      --payload "$(printf '{"action":"%s","pr":%s}' "$1" "$PR")" \
+      --cli-binary-format raw-in-base64-out "$tmp" \
+      --query 'FunctionError' --output text)"
+    echo "   result: $(cat "$tmp")"; rm -f "$tmp"
+    [ "$err" = "None" ] || { echo "   lambda FunctionError=$err"; return 1; }
+  elif [ "$1" = "create" ]; then
+    if ! psql "$RDS_MASTER_URL" -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
+      echo "== create database ${DB_NAME}"; psql "$RDS_MASTER_URL" -c "CREATE DATABASE ${DB_NAME}"
+    fi
+  else
+    psql "$RDS_MASTER_URL" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
+    psql "$RDS_MASTER_URL" -c "DROP DATABASE IF EXISTS ${DB_NAME}" || true
+  fi
+}
+
+# ── 1. 建 per-PR 逻辑库（幂等）─────────────────────────────────────────
+pr_db create
 # 把 per-PR DATABASE_URL 写进 SSM（SecureString，供 taskdef 作为 secret 引用）
 # 用 master 连接串同款用户/主机/参数，只替换库名。
 DB_URL="$(printf '%s' "$RDS_MASTER_URL" | sed -E "s#(/)[^/?]+(\?|$)#\1${DB_NAME}\2#")"

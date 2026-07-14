@@ -4,7 +4,9 @@
 # 幂等：每一步都容忍资源已不存在。
 #
 # 依赖环境变量：PR ACCOUNT REGION CLUSTER ALB_LISTENER_ARN BASE_DOMAIN
-# SSM 取值：/mistake/DATABASE_URL（复用为 master 连接串，用于 DROP DATABASE）
+#   DB_VIA_LAMBDA  =1 时用 VPC Lambda 删库（GHA）；否则用 psql（CodeBuild）
+#   DB_LAMBDA      Lambda 名，默认 mistake-pr-db
+# SSM 取值（仅 psql 模式）：/mistake/DATABASE_URL（复用为 master 连接串）
 set -euo pipefail
 
 : "${PR:?}" "${ACCOUNT:?}" "${REGION:?}" "${CLUSTER:?}" "${ALB_LISTENER_ARN:?}" "${BASE_DOMAIN:?}"
@@ -50,11 +52,17 @@ done
 # 5. per-PR SSM 参数
 aws ssm delete-parameter --name "/mistake/pr/${PR}/DATABASE_URL" >/dev/null 2>&1 || true
 
-# 6. 逻辑库：先踢掉连接再 DROP
-RDS_MASTER_URL="$(aws ssm get-parameter --name /mistake/DATABASE_URL --with-decryption --query Parameter.Value --output text)"
-psql "$RDS_MASTER_URL" -c \
-  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
-psql "$RDS_MASTER_URL" -c "DROP DATABASE IF EXISTS ${DB_NAME}" >/dev/null 2>&1 || true
+# 6. 逻辑库：DB_VIA_LAMBDA=1 走 VPC Lambda，否则 psql（先踢连接再 DROP）
+if [ "${DB_VIA_LAMBDA:-0}" = "1" ]; then
+  aws lambda invoke --function-name "${DB_LAMBDA:-mistake-pr-db}" \
+    --payload "$(printf '{"action":"drop","pr":%s}' "$PR")" \
+    --cli-binary-format raw-in-base64-out /dev/stdout >/dev/null 2>&1 || true
+else
+  RDS_MASTER_URL="$(aws ssm get-parameter --name /mistake/DATABASE_URL --with-decryption --query Parameter.Value --output text)"
+  psql "$RDS_MASTER_URL" -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid<>pg_backend_pid()" >/dev/null 2>&1 || true
+  psql "$RDS_MASTER_URL" -c "DROP DATABASE IF EXISTS ${DB_NAME}" >/dev/null 2>&1 || true
+fi
 echo "   dropped database ${DB_NAME}"
 
 # 7. ECR 镜像 tag
