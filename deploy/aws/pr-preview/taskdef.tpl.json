@@ -4,7 +4,7 @@
   "networkMode": "awsvpc",
   "cpu": "256",
   "memory": "512",
-  "runtimePlatform": { "cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX" },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
   "executionRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-ecs-exec-role",
   "taskRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-task-role",
   "containerDefinitions": [

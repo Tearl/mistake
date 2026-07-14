@@ -42,14 +42,15 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build & push arm64 image
+      # 预览后端跑 x86（生产仍 arm64，互不影响）；amd64 在 amd64 runner 上原生构建，
+      # 无需 QEMU，比 arm64 模拟快很多。
+      - name: Build & push amd64 image
         run: |
           PR=${{ github.event.number }}
           ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
-          docker buildx build --platform linux/arm64 \
+          docker buildx build --platform linux/amd64 \
             --build-arg GO_IMAGE=public.ecr.aws/docker/library/golang:1.26 \
             --provenance=false \
             -t "$ECR/mistake-server:pr-$PR" --push apps/server-go
