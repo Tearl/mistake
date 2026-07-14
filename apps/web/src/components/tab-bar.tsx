@@ -1,11 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { BarChart3, Home, Shuffle, Upload } from "lucide-react";
+import { BarChart3, Home, Shuffle, Upload, User } from "lucide-react";
 
 const TABS = [
   { to: "/", label: "首页", Icon: Home },
   { to: "/upload", label: "上传", Icon: Upload },
   { to: "/review", label: "复习", Icon: Shuffle },
   { to: "/stats", label: "统计", Icon: BarChart3 },
+  { to: "/me", label: "我的", Icon: User },
 ] as const;
 
 export default function TabBar() {
