@@ -2,6 +2,8 @@
 
 每开一个 PR，自动拉起一套**独立的前后端预览**；PR 关闭/合并时自动销毁。评审点开真实 URL 即可验证，互不干扰。生产环境（`app/api.toton123.xyz`）见 [../RUNBOOK.md](../RUNBOOK.md)，本方案**复用**其大部分资源。
 
+> ⚠️ **当前上线用的是 GitHub Actions 路径**（因本账号 CodeBuild 并发被封为 0），编排/构建/建库改由 GHA + OIDC + VPC Lambda 完成，见 **[ALT-github-actions.md](ALT-github-actions.md)**。本文档描述的 CodeBuild 版保留作备用/回滚，其中的架构、命名约定、`taskdef.tpl.json`、`deploy.sh`/`teardown.sh`、Cloudflare/ALB/ECS 部分两条路完全共用。
+
 ## 工作原理
 
 ```
@@ -145,6 +147,17 @@ CLI 版命令见文末附录。
 - S3 复用同一桶同一 `uploads/` 前缀（Go 里写死），预览上传混入生产桶——公开读、低风险。要隔离后续给 `internal/storage` 加 `S3_PREFIX`。
 - API_KEY 复用生产共享值；预览属内部用途。
 - ALB 每监听器默认 100 条规则（够几十个并发 PR，可提额）。
+
+## 运维
+- **RDS 主密码轮换后**：GHA 路径的建/删库 Lambda `mistake-pr-db` 把 master 连接串存在自己的 env `MASTER_URL`（KMS 加密），不会自动跟随 SSM。改密码后必须同步更新，否则新 PR 建库失败：
+  ```bash
+  MASTER_URL="$(aws ssm get-parameter --name /mistake/DATABASE_URL --with-decryption --query Parameter.Value --output text)"
+  aws lambda update-function-configuration --function-name mistake-pr-db \
+    --environment "Variables={MASTER_URL=$MASTER_URL}"
+  ```
+  （前提是 `/mistake/DATABASE_URL` 本身已更新为新密码。CodeBuild 路径不受影响，它每次从 SSM 现取。）
+- **Lambda 改代码/依赖后重部署**：见 [ALT-github-actions.md](ALT-github-actions.md) §一.3（`go build` → `zip` → `aws lambda update-function-code`）。
+- **回滚到 CodeBuild**（若账号 CodeBuild 解封）：`deploy.sh` 不设 `DB_VIA_LAMBDA` 即走 psql；重挂 CodeBuild webhook、停用 GHA workflow，二者别同时开。
 
 ---
 
