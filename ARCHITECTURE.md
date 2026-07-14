@@ -139,7 +139,29 @@ ECS 任务启动流程（两环境相同）：从 **ECR** 拉镜像 → 从 **SS
 
 ---
 
-## 4. 关键设计决策
+## 4. Cloud Map 服务发现（ECS → Lambda）
+
+演示「ECS 服务经 AWS Cloud Map 发现并调用 Lambda」，与主业务链路解耦、随时可 curl 验证。因 Lambda 无固定 IP，采用 **HTTP 命名空间 + DiscoverInstances**（API 发现，非 DNS A 记录）。
+
+```
+ECS 后端 (Go, 用 mistake-task-role)
+  │  GET /api/cloudmap-hello
+  ├─ servicediscovery:DiscoverInstances(namespace=mistake-services, service=hello)
+  │     → 实例属性 functionName = mistake-cloudmap-hello
+  └─ lambda:Invoke(functionName) → 返回 Lambda 的问候 JSON
+```
+
+组成：
+- **Cloud Map**：HTTP 命名空间 `mistake-services`；服务 `hello`；实例 `hello-1`（属性 `functionName` / `region`）。
+- **Lambda** `mistake-cloudmap-hello`（Go, arm64, 执行角色 `mistake-cloudmap-lambda-role`）：普通调用型接口，返回 `{message, service, time}`。源码 `deploy/aws/cloudmap-demo/lambda-hello/`。
+- **后端端点** `GET /api/cloudmap-hello`（`apps/server-go/internal/handlers/cloudmap.go`）：发现 → invoke，Lambda 地址不硬编码；命名空间/服务名可用 env `CLOUDMAP_NAMESPACE` / `CLOUDMAP_SERVICE` 覆盖（默认 `mistake-services` / `hello`）。
+- **权限**：ECS 任务角色 `mistake-task-role` 加内联策略 `mistake-cloudmap`（`servicediscovery:DiscoverInstances` + `lambda:InvokeFunction`）。
+
+> 为什么不走 Function URL + DNS：本账号护栏把 Lambda Function URL 的公网访问 403，且 Lambda 无 IP 不适合 Cloud Map 的 DNS A 记录；改用 HTTP 命名空间 API 发现 + `lambda:Invoke`，更贴近生产且无需公网暴露。
+
+验证：`curl -H "X-API-Key: <key>" https://api.toton123.xyz/api/cloudmap-hello` → 返回含 `discoveredFunction` 与 `lambdaResponse`。
+
+## 5. 关键设计决策
 
 - **OIDC 免密钥**：GHA 不存 AWS 长期密钥，`mistake-gha-role` 信任限定 `repo:Tearl/mistake:*`。
 - **RDS 私有 → VPC Lambda 建库**：托管 runner 在 VPC 外连不到私有 RDS，唯一需进 VPC 的「建/删库」由 `mistake-pr-db` 承担；其余（ECR/ECS/ELB/wrangler）都是公网 API。
@@ -154,7 +176,7 @@ ECS 任务启动流程（两环境相同）：从 **ECR** 拉镜像 → 从 **SS
 
 ---
 
-## 5. 资源清单（us-east-1 · 账号 496251221975）
+## 6. 资源清单（us-east-1 · 账号 496251221975）
 
 | 类别 | 资源 |
 |---|---|
@@ -167,11 +189,12 @@ ECS 任务启动流程（两环境相同）：从 **ECR** 拉镜像 → 从 **SS
 | IAM | 执行 `mistake-ecs-exec-role`、任务 `mistake-task-role`、GHA `mistake-gha-role`、Lambda `mistake-pr-db-lambda-role`；OIDC provider `token.actions.githubusercontent.com` |
 | PR 编排 | GHA `.github/workflows/pr-preview.yml`；VPC Lambda `mistake-pr-db`（arm64，SG `sg-034dd7da68ec36c3d`）；CodeBuild `mistake-pr-{deploy,teardown}`(备用，webhook 已删) |
 | 网络 | 默认 VPC `vpc-0c36b43361100250a`；公有子网 `subnet-051776f835b1b44da / 0b62c3c3da2bf7fbd / 0f3f95ddb4ab8d5c5`；任务 SG `sg-0b23ad3efd38c816a` |
+| Cloud Map | HTTP 命名空间 `mistake-services`(ns-jfii6h5th23drwwi) · 服务 `hello` · 实例 `hello-1`；演示 Lambda `mistake-cloudmap-hello`(角色 `mistake-cloudmap-lambda-role`)；任务角色策略 `mistake-cloudmap` |
 | 外部 | 阿里云 DashScope（通义千问）；CF account `f350f1151c3d19066f82fd0c42e8ecd2` |
 
 ---
 
-## 6. 运维
+## 7. 运维
 
 - **重新部署生产**：见 [RUNBOOK 附录 B](deploy/aws/RUNBOOK.md)（后端 build+push+`update-service`；前端 `wrangler ... --branch main`）。
 - **RDS 改密码后**：更新 SSM `/mistake/DATABASE_URL`，并同步 Lambda env（否则新 PR 建库失败）：
