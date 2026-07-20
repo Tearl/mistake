@@ -1,0 +1,54 @@
+{
+  "cluster": "mistake",
+  "service": "mistake",
+  "taskDefinition": "__API_TASK_DEFINITION_ARN__",
+  "deploymentController": {
+    "type": "ECS"
+  },
+  "deploymentConfiguration": {
+    "strategy": "CANARY",
+    "minimumHealthyPercent": 100,
+    "maximumPercent": 200,
+    "canaryConfiguration": {
+      "canaryPercent": 10,
+      "canaryBakeTimeInMinutes": 15
+    },
+    "bakeTimeInMinutes": 10,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    },
+    "alarms": {
+      "alarmNames": [
+        "mistake-api-target-5xx",
+        "mistake-api-latency-p95"
+      ],
+      "enable": true,
+      "rollback": true
+    },
+    "lifecycleHooks": [
+      {
+        "targetType": "AWS_LAMBDA",
+        "hookTargetArn": "__CANARY_VALIDATOR_ARN__",
+        "roleArn": "__HOOK_INVOKE_ROLE_ARN__",
+        "lifecycleStages": ["POST_TEST_TRAFFIC_SHIFT"],
+        "hookDetails": {
+          "expectedVersion": "__APP_VERSION__"
+        }
+      }
+    ]
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "__PRIMARY_TARGET_GROUP_ARN__",
+      "containerName": "server",
+      "containerPort": 3000,
+      "advancedConfiguration": {
+        "alternateTargetGroupArn": "__ALTERNATE_TARGET_GROUP_ARN__",
+        "productionListenerRule": "__PRODUCTION_LISTENER_RULE_ARN__",
+        "testListenerRule": "__TEST_LISTENER_RULE_ARN__",
+        "roleArn": "__INFRASTRUCTURE_ROLE_ARN__"
+      }
+    }
+  ]
+}

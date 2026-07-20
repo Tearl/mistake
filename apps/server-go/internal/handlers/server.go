@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,19 +13,33 @@ import (
 	"mistakeserver/internal/ai"
 	"mistakeserver/internal/config"
 	"mistakeserver/internal/db"
+	"mistakeserver/internal/messaging"
+	"mistakeserver/internal/recognition"
 	"mistakeserver/internal/storage"
 )
 
 type Server struct {
-	Cfg   *config.Config
-	Pool  *pgxpool.Pool
-	Q     *db.Queries
-	AI    *ai.Client
-	Store storage.Storage
+	Cfg         *config.Config
+	Pool        *pgxpool.Pool
+	Q           *db.Queries
+	AI          *ai.Client
+	Store       storage.Storage
+	Publisher   messaging.Publisher
+	Recognition *recognition.Processor
 }
 
-func New(cfg *config.Config, pool *pgxpool.Pool, ai *ai.Client, store storage.Storage) *Server {
-	return &Server{Cfg: cfg, Pool: pool, Q: db.New(pool), AI: ai, Store: store}
+func New(
+	cfg *config.Config,
+	pool *pgxpool.Pool,
+	aiClient *ai.Client,
+	store storage.Storage,
+	publisher messaging.Publisher,
+	processor *recognition.Processor,
+) *Server {
+	return &Server{
+		Cfg: cfg, Pool: pool, Q: db.New(pool), AI: aiClient, Store: store,
+		Publisher: publisher, Recognition: processor,
+	}
 }
 
 // user 返回当前请求的用户 id（单用户模式恒为 dev 用户）
@@ -94,6 +109,15 @@ func parseUUID(s string) (pgtype.UUID, error) {
 	var u pgtype.UUID
 	err := u.Scan(s)
 	return u, err
+}
+
+func newUUID() pgtype.UUID {
+	var id pgtype.UUID
+	_, _ = rand.Read(id.Bytes[:])
+	id.Bytes[6] = (id.Bytes[6] & 0x0f) | 0x40
+	id.Bytes[8] = (id.Bytes[8] & 0x3f) | 0x80
+	id.Valid = true
+	return id
 }
 
 func tsMillis(t pgtype.Timestamptz) int64 {

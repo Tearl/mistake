@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM roles and a Lambda smoke-test hook for native Amazon ECS canary deployments.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: mistake
+    AllowedPattern: "^[a-z0-9-]+$"
+  TargetBaseUrl:
+    Type: String
+    Description: Public API origin, for example https://api.example.com (without a trailing slash).
+  ApiKeyParameterName:
+    Type: String
+    Default: /mistake/API_KEY
+    Description: SecureString parameter used to exercise the authenticated stats endpoint.
+  CanaryHeaderName:
+    Type: String
+    Default: X-Mistake-Canary
+  CanaryHeaderValue:
+    Type: String
+    Default: "1"
+
+Resources:
+  EcsLoadBalancerInfrastructureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-ecs-lb-infrastructure-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers"
+
+  CanaryValidatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-canary-validator-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: ReadApiKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiKeyParameterName}"
+
+  CanaryValidator:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-ecs-canary-validator"
+      Description: Validates the green ECS revision through the ALB test rule.
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt CanaryValidatorRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          TARGET_BASE_URL: !Ref TargetBaseUrl
+          API_KEY_PARAMETER_NAME: !Ref ApiKeyParameterName
+          CANARY_HEADER_NAME: !Ref CanaryHeaderName
+          CANARY_HEADER_VALUE: !Ref CanaryHeaderValue
+      Code:
+        ZipFile: |
+          const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+
+          const ssm = new SSMClient({});
+          const baseUrl = process.env.TARGET_BASE_URL.replace(/\/$/, "");
+          const canaryHeader = process.env.CANARY_HEADER_NAME;
+          const canaryValue = process.env.CANARY_HEADER_VALUE;
+
+          async function request(path, extraHeaders = {}) {
+            const response = await fetch(`${baseUrl}${path}`, {
+              headers: { [canaryHeader]: canaryValue, ...extraHeaders },
+              signal: AbortSignal.timeout(8000),
+            });
+            const body = await response.text();
+            if (!response.ok) {
+              throw new Error(`${path} returned ${response.status}: ${body.slice(0, 300)}`);
+            }
+            return { response, body };
+          }
+
+          exports.handler = async (event) => {
+            try {
+              const ready = await request("/health/ready");
+              const readyBody = JSON.parse(ready.body);
+              if (readyBody.status !== "ok") throw new Error("readiness response is not ok");
+
+              const version = await request("/version");
+              const versionBody = JSON.parse(version.body);
+              const actualVersion = version.response.headers.get("x-app-version") || versionBody.version;
+              const expectedVersion = event.hookDetails && event.hookDetails.expectedVersion;
+              if (expectedVersion && actualVersion !== expectedVersion) {
+                throw new Error(`expected version ${expectedVersion}, received ${actualVersion}`);
+              }
+
+              const parameter = await ssm.send(new GetParameterCommand({
+                Name: process.env.API_KEY_PARAMETER_NAME,
+                WithDecryption: true,
+              }));
+              await request("/api/stats", { "X-API-Key": parameter.Parameter.Value });
+
+              console.log(JSON.stringify({
+                result: "succeeded",
+                lifecycleStage: event.lifecycleStage,
+                version: actualVersion,
+              }));
+              return { hookStatus: "SUCCEEDED" };
+            } catch (error) {
+              console.error(JSON.stringify({
+                result: "failed",
+                lifecycleStage: event.lifecycleStage,
+                error: error.message,
+              }));
+              return { hookStatus: "FAILED" };
+            }
+          };
+
+  EcsHookInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-ecs-hook-invoke-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeCanaryValidator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt CanaryValidator.Arn
+
+Outputs:
+  InfrastructureRoleArn:
+    Value: !GetAtt EcsLoadBalancerInfrastructureRole.Arn
+  CanaryValidatorArn:
+    Value: !GetAtt CanaryValidator.Arn
+  HookInvokeRoleArn:
+    Value: !GetAtt EcsHookInvokeRole.Arn

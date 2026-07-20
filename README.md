@@ -53,7 +53,12 @@ mistake/
 │   ├── env/         # 环境变量校验（web 用 VITE_SERVER_URL）
 │   ├── config/      # 共享 tsconfig
 │   └── infra/       # Cloudflare 部署（alchemy）
+├── deploy/aws/      # AWS 后端部署、PR 预览与定时 API 巡检
 ```
+
+## 生产巡检
+
+`deploy/aws/synthetics` 提供 CloudFormation 模板，由 EventBridge Scheduler 每 5 分钟调用 512 MB Lambda，巡检生产 API 的公开健康检查和带鉴权统计接口，并可通过 CloudWatch Alarm + SNS 邮件告警。部署与运维见 [AWS API 巡检说明](deploy/aws/synthetics/README.md)。
 
 ## UI 定制
 

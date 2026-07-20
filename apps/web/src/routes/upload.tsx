@@ -1,9 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
+import type { RecognitionJob, RecognizeResult } from "@/lib/api";
 import { DIFFICULTIES, SUBJECTS } from "@/lib/theme";
 
 export const Route = createFileRoute("/upload")({
@@ -32,14 +33,67 @@ const EMPTY_FORM: Form = {
   errorReason: "",
 };
 
+const TERMINAL_RECOGNITION_STATUSES = new Set<RecognitionJob["status"]>([
+  "succeeded",
+  "failed",
+  "dead_lettered",
+  "publish_failed",
+]);
+
+function formFromRecognition(result: RecognizeResult): Form {
+  return {
+    subject: result.subject || "",
+    knowledgePoints: (result.knowledgePoints || []).join("，"),
+    questionType: result.questionType || "",
+    difficulty: result.difficulty || "中",
+    ocrText: result.ocrText || "",
+    answer: result.answer || "",
+    errorReason: result.errorReason || "",
+  };
+}
+
 function UploadComponent() {
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>("idle");
   const [imagePath, setImagePath] = useState(""); // 本地预览 URL
   const [imageFileID, setImageFileID] = useState(""); // 上传后服务器返回的图片地址
+  const [recognitionJobID, setRecognitionJobID] = useState("");
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const handledJobRef = useRef("");
+
+  const recognitionQ = useQuery({
+    queryKey: ["recognition", recognitionJobID],
+    queryFn: () => api.getRecognition(recognitionJobID),
+    enabled: Boolean(recognitionJobID) && phase === "recognizing",
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && TERMINAL_RECOGNITION_STATUSES.has(status) ? false : 2_000;
+    },
+    retry: 2,
+  });
+
+  useEffect(() => {
+    const job = recognitionQ.data;
+    if (!job || handledJobRef.current === job.jobId || !TERMINAL_RECOGNITION_STATUSES.has(job.status)) {
+      return;
+    }
+    handledJobRef.current = job.jobId;
+    if (job.status === "succeeded" && job.result) {
+      setForm(formFromRecognition(job.result));
+    } else {
+      toast.error(`${job.lastError || "AI 识别失败"}，请手动填写`);
+    }
+    setPhase("recognized");
+  }, [recognitionQ.data]);
+
+  useEffect(() => {
+    if (!recognitionQ.error || !recognitionJobID || handledJobRef.current === recognitionJobID) return;
+    handledJobRef.current = recognitionJobID;
+    toast.error(`${recognitionQ.error.message}，请手动填写`);
+    setPhase("recognized");
+  }, [recognitionJobID, recognitionQ.error]);
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -51,23 +105,23 @@ function UploadComponent() {
       const { imageFileID } = await api.upload(file);
       setImageFileID(imageFileID);
       setPhase("recognizing");
-      // 调真实通义千问识别
       try {
-        const d = await api.recognize(imageFileID);
-        setForm({
-          subject: d.subject || "",
-          knowledgePoints: (d.knowledgePoints || []).join("，"),
-          questionType: d.questionType || "",
-          difficulty: d.difficulty || "中",
-          ocrText: d.ocrText || "",
-          answer: d.answer || "",
-          errorReason: d.errorReason || "",
-        });
+        const job = await api.createRecognition(imageFileID, crypto.randomUUID());
+        if (job.status === "succeeded" && job.result) {
+          handledJobRef.current = job.jobId;
+          setForm(formFromRecognition(job.result));
+          setPhase("recognized");
+        } else if (TERMINAL_RECOGNITION_STATUSES.has(job.status)) {
+          handledJobRef.current = job.jobId;
+          toast.error(`${job.lastError || "AI 识别失败"}，请手动填写`);
+          setPhase("recognized");
+        } else {
+          setRecognitionJobID(job.jobId);
+        }
       } catch (err) {
-        // 识别失败（如未配置 AI key）：保留图片，转为手动填写
-        toast.error(`${(err as Error).message}，请手动填写`);
+        toast.error(`${(err as Error).message}，图片已上传，请手动填写`);
+        setPhase("recognized");
       }
-      setPhase("recognized");
     } catch (err) {
       toast.error((err as Error).message);
       reset();
@@ -77,6 +131,8 @@ function UploadComponent() {
   const reset = () => {
     setImagePath("");
     setImageFileID("");
+    setRecognitionJobID("");
+    handledJobRef.current = "";
     setForm(EMPTY_FORM);
     setSaving(false);
     setPhase("idle");
@@ -162,14 +218,20 @@ function UploadComponent() {
               ⚡
             </span>
           </div>
-          <span className="h-serif text-[16px] text-white">AI 正在识别中…</span>
+          <span className="h-serif text-[16px] text-white">
+            {recognitionQ.data?.status === "queued" ? "任务排队中…" : "AI 正在识别中…"}
+          </span>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
             <div
               className="h-full rounded-full bg-[var(--c-yellow)]"
               style={{ animation: "mistake-slide 1.4s ease-in-out infinite" }}
             />
           </div>
-          <span className="text-[11px] text-white/60">正在提取题目内容与知识点</span>
+          <span className="text-[11px] text-white/60">
+            {recognitionQ.data?.status === "retrying"
+              ? `识别失败，正在进行第 ${recognitionQ.data.attempts + 1} 次尝试`
+              : "正在提取题目内容与知识点"}
+          </span>
         </div>
       )}
 

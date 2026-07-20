@@ -55,6 +55,27 @@ export interface RecognizeResult {
   errorReason: string;
 }
 
+export type RecognitionStatus =
+  | "queued"
+  | "processing"
+  | "retrying"
+  | "succeeded"
+  | "failed"
+  | "dead_lettered"
+  | "publish_failed";
+
+export interface RecognitionJob {
+  jobId: string;
+  requestId: string;
+  imageFileID: string;
+  status: RecognitionStatus;
+  attempts: number;
+  result?: RecognizeResult;
+  lastError?: string;
+  createdAt: number;
+  completedAt?: number;
+}
+
 export interface SimilarItem {
   question: string;
   answer: string;
@@ -142,6 +163,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ imageFileID }),
     });
+  },
+  createRecognition(imageFileID: string, requestId: string): Promise<RecognitionJob> {
+    return req<RecognitionJob>("/api/recognitions", {
+      method: "POST",
+      body: JSON.stringify({ imageFileID, requestId }),
+    });
+  },
+  getRecognition(jobId: string): Promise<RecognitionJob> {
+    return req<RecognitionJob>(`/api/recognitions/${jobId}`);
   },
   similar(input: {
     subject: string;

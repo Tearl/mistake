@@ -27,6 +27,22 @@ type Mistake struct {
 	LastReviewAt    pgtype.Timestamptz `json:"last_review_at"`
 }
 
+type RecognitionJob struct {
+	ID          pgtype.UUID        `json:"id"`
+	RequestID   string             `json:"request_id"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	UserID      string             `json:"user_id"`
+	ImageFileID string             `json:"image_file_id"`
+	Status      string             `json:"status"`
+	Attempts    int32              `json:"attempts"`
+	Result      []byte             `json:"result"`
+	LastError   string             `json:"last_error"`
+	PublishedAt pgtype.Timestamptz `json:"published_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ReviewLog struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    string             `json:"user_id"`

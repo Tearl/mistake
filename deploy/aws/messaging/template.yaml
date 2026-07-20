@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SNS, SQS, DLQ, alarms, and ECS task permissions for asynchronous mistake recognition.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: mistake
+    AllowedPattern: "^[a-z0-9-]+$"
+  ApiTaskRoleName:
+    Type: String
+    Default: mistake-task-role
+    Description: Existing ECS API task role that receives sns:Publish.
+  UploadsBucketName:
+    Type: String
+    Description: Existing S3 bucket containing uploads/*.
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional existing SNS topic ARN for CloudWatch notifications.
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+
+Resources:
+  EventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-events"
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: component
+          Value: messaging
+
+  RecognitionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-recognition-dlq"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: component
+          Value: recognition-dlq
+
+  RecognitionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-recognition"
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 120
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RecognitionDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: component
+          Value: recognition-queue
+
+  RecognitionQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref RecognitionQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventsTopic
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt RecognitionQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref EventsTopic
+
+  RecognitionSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt RecognitionQueue.Arn
+      TopicArn: !Ref EventsTopic
+      RawMessageDelivery: true
+      FilterPolicy:
+        eventType:
+          - recognition.requested
+
+  ApiPublishPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AppName}-publish-events"
+      Roles:
+        - !Ref ApiTaskRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sns:Publish
+            Resource: !Ref EventsTopic
+
+  WorkerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-worker-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ConsumeRecognitionQueue
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt RecognitionQueue.Arn
+        - PolicyName: ReadUploadedImages
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${UploadsBucketName}/uploads/*"
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: component
+          Value: recognition-worker
+
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-recognition-dlq-not-empty"
+      AlarmDescription: Recognition messages reached the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt RecognitionDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        !If
+          - HasAlarmTopic
+          - - !Ref AlarmTopicArn
+          - []
+      OKActions:
+        !If
+          - HasAlarmTopic
+          - - !Ref AlarmTopicArn
+          - []
+
+  QueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-recognition-queue-oldest-message"
+      AlarmDescription: Recognition jobs have waited longer than five minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt RecognitionQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 300
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        !If
+          - HasAlarmTopic
+          - - !Ref AlarmTopicArn
+          - []
+      OKActions:
+        !If
+          - HasAlarmTopic
+          - - !Ref AlarmTopicArn
+          - []
+
+Outputs:
+  EventsTopicArn:
+    Value: !Ref EventsTopic
+  RecognitionQueueArn:
+    Value: !GetAtt RecognitionQueue.Arn
+  RecognitionQueueUrl:
+    Value: !Ref RecognitionQueue
+  RecognitionDeadLetterQueueArn:
+    Value: !GetAtt RecognitionDeadLetterQueue.Arn
+  RecognitionDeadLetterQueueUrl:
+    Value: !Ref RecognitionDeadLetterQueue
+  WorkerTaskRoleArn:
+    Value: !GetAtt WorkerTaskRole.Arn

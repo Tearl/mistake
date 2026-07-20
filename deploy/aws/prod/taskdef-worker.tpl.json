@@ -1,0 +1,36 @@
+{
+  "family": "mistake-worker",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-ecs-exec-role",
+  "taskRoleArn": "__WORKER_TASK_ROLE_ARN__",
+  "containerDefinitions": [{
+    "name": "worker",
+    "image": "__IMAGE__",
+    "essential": true,
+    "environment": [
+      { "name": "APP_MODE", "value": "worker" },
+      { "name": "AUTO_MIGRATE", "value": "false" },
+      { "name": "SQS_QUEUE_URL", "value": "__SQS_QUEUE_URL__" },
+      { "name": "SQS_WAIT_TIME_SECONDS", "value": "20" },
+      { "name": "SQS_VISIBILITY_TIMEOUT", "value": "120" },
+      { "name": "SQS_MAX_RECEIVE_COUNT", "value": "3" },
+      { "name": "APP_VERSION", "value": "__APP_VERSION__" },
+      { "name": "STORAGE", "value": "s3" },
+      { "name": "S3_BUCKET", "value": "mistake-uploads-__ACCOUNT__" },
+      { "name": "AWS_REGION", "value": "__REGION__" },
+      { "name": "S3_PUBLIC_BASE_URL", "value": "https://mistake-uploads-__ACCOUNT__.s3.__REGION__.amazonaws.com" }
+    ],
+    "secrets": [
+      { "name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:__REGION__:__ACCOUNT__:parameter/mistake/DATABASE_URL" },
+      { "name": "DASHSCOPE_API_KEY", "valueFrom": "arn:aws:ssm:__REGION__:__ACCOUNT__:parameter/mistake/DASHSCOPE_API_KEY" }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": { "awslogs-group": "/ecs/mistake", "awslogs-region": "__REGION__", "awslogs-stream-prefix": "worker" }
+    }
+  }]
+}

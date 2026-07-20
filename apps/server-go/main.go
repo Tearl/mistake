@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -11,13 +15,18 @@ import (
 
 	"mistakeserver/internal/ai"
 	"mistakeserver/internal/config"
+	"mistakeserver/internal/db"
 	"mistakeserver/internal/handlers"
+	"mistakeserver/internal/messaging"
+	"mistakeserver/internal/recognition"
 	"mistakeserver/internal/storage"
+	"mistakeserver/internal/worker"
 )
 
 func main() {
 	cfg := config.Load()
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -28,9 +37,14 @@ func main() {
 		log.Fatalf("ping db: %v", err)
 	}
 
-	// 启动时自动建表 + seed（迁移已嵌入二进制）
-	if err := runMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatalf("run migrations: %v", err)
+	if cfg.AppMode == "migrate" || cfg.AutoMigrate {
+		if err := runMigrations(cfg.DatabaseURL); err != nil {
+			log.Fatalf("run migrations: %v", err)
+		}
+	}
+	if cfg.AppMode == "migrate" {
+		log.Print("database migrations completed")
+		return
 	}
 
 	// 选择图片存储：s3（生产）或 local（开发）
@@ -39,17 +53,77 @@ func main() {
 		log.Fatalf("init storage: %v", err)
 	}
 
-	srv := handlers.New(cfg, pool, ai.New(cfg.DashScopeKey), store)
+	aiClient := ai.New(cfg.DashScopeKey)
+	queries := db.New(pool)
+	processor := recognition.New(queries, aiClient, store)
+
+	var publisher messaging.Publisher
+	if cfg.AsyncRecognition && (cfg.AppMode == "api" || cfg.AppMode == "all") {
+		publisher, err = messaging.NewSNSPublisher(ctx, cfg.AWSRegion, cfg.SNSTopicARN)
+		if err != nil {
+			log.Fatalf("init SNS publisher: %v", err)
+		}
+	}
+
+	if cfg.AppMode == "worker" || cfg.AppMode == "all" {
+		recognitionWorker, workerErr := worker.NewRecognitionWorker(
+			ctx, cfg.AWSRegion, cfg.SQSQueueURL,
+			cfg.SQSWaitTimeSeconds, cfg.SQSVisibilityTimeout, cfg.SQSMaxReceiveCount,
+			processor, queries,
+		)
+		if workerErr != nil {
+			log.Fatalf("init recognition worker: %v", workerErr)
+		}
+		if cfg.AppMode == "worker" {
+			if err := recognitionWorker.Run(ctx); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+		go func() {
+			if err := recognitionWorker.Run(ctx); err != nil {
+				log.Printf("recognition worker stopped: %v", err)
+				stop()
+			}
+		}()
+	}
+
+	if cfg.AppMode != "api" && cfg.AppMode != "all" {
+		log.Fatalf("unsupported APP_MODE %q", cfg.AppMode)
+	}
+
+	srv := handlers.New(cfg, pool, aiClient, store, publisher, processor)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware(cfg.CORSOrigins()))
 
-	// 健康检查：ALB Target Group 打它，不走鉴权
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+	// Liveness does not touch dependencies; readiness verifies the database.
+	r.Get("/health/live", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	ready := func(w http.ResponseWriter, r *http.Request) {
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(pingCtx); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}
+	r.Get("/health", ready)
+	r.Get("/health/ready", ready)
+	r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-App-Version", cfg.AppVersion)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"version": cfg.AppVersion, "buildTime": cfg.BuildTime, "mode": cfg.AppMode,
+		})
 	})
 
 	r.Route("/api", func(r chi.Router) {
@@ -65,6 +139,8 @@ func main() {
 		r.Get("/admin", srv.Admin)
 		r.Post("/upload", srv.Upload)
 		r.Post("/recognize", srv.Recognize)
+		r.Post("/recognitions", srv.CreateRecognition)
+		r.Get("/recognitions/{id}", srv.GetRecognition)
 		r.Post("/similar", srv.Similar)
 		r.Post("/export", srv.Export)
 		r.Get("/cloudmap-hello", srv.CloudMapHello) // 作业二：ECS 经 Cloud Map 发现并调 Lambda
@@ -76,9 +152,16 @@ func main() {
 	}
 
 	addr := ":" + cfg.Port
-	log.Printf("拾错 Go 后端启动于 :%s（storage=%s, AI key=%v, apiKey=%v）",
-		cfg.Port, cfg.Storage, srv.AI.HasKey(), cfg.APIKey != "")
-	if err := http.ListenAndServe(addr, r); err != nil {
+	server := &http.Server{Addr: addr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	log.Printf("拾错 Go 后端启动于 :%s（storage=%s, AI key=%v, apiKey=%v, async=%v, version=%s）",
+		cfg.Port, cfg.Storage, srv.AI.HasKey(), cfg.APIKey != "", cfg.AsyncRecognition, cfg.AppVersion)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
