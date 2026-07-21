@@ -2,3 +2,7 @@
 !/uploads/.gitkeep
 .env
 /server-go
+
+# 本地性能 SDK / 清洗产物
+perf_logs/
+ops_data/

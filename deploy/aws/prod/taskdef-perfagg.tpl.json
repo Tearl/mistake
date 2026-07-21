@@ -1,0 +1,30 @@
+{
+  "family": "mistake-perfagg",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::__ACCOUNT__:role/mistake-ecs-exec-role",
+  "taskRoleArn": "__PERFAGG_TASK_ROLE_ARN__",
+  "containerDefinitions": [{
+    "name": "perfagg",
+    "image": "__IMAGE__",
+    "essential": true,
+    "environment": [
+      { "name": "APP_MODE", "value": "perfagg" },
+      { "name": "AUTO_MIGRATE", "value": "false" },
+      { "name": "STORAGE", "value": "s3" },
+      { "name": "S3_BUCKET", "value": "mistake-uploads-__ACCOUNT__" },
+      { "name": "AWS_REGION", "value": "__REGION__" },
+      { "name": "PERF_LOG_GROUP", "value": "/mistake/perf" },
+      { "name": "OPS_S3_KEY", "value": "ops/aggregates/latest.json" },
+      { "name": "OPS_WINDOW_MINUTES", "value": "5" },
+      { "name": "APP_VERSION", "value": "__APP_VERSION__" }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": { "awslogs-group": "/ecs/mistake", "awslogs-region": "__REGION__", "awslogs-stream-prefix": "perfagg" }
+    }
+  }]
+}

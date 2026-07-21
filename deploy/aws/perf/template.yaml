@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Performance SDK log group, perfagg cleaning role/schedule, and IAM grants for mistake /ops.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: mistake
+  ApiTaskRoleName:
+    Type: String
+    Default: mistake-task-role
+    Description: Existing API/worker task role that emits perf logs and reads the ops summary.
+  UploadsBucketName:
+    Type: String
+    Description: Existing S3 bucket; ops aggregates live under ops/*.
+  PerfLogGroupName:
+    Type: String
+    Default: /mistake/perf
+  PerfLogRetentionDays:
+    Type: Number
+    Default: 7
+  Cluster:
+    Type: String
+    Default: mistake
+  PerfAggTaskDefinition:
+    Type: String
+    Default: ""
+    Description: perfagg task definition ARN. Leave empty on the first deploy (creates log group + roles), then pass it to add the schedule.
+  Subnets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Subnets for the scheduled Fargate task (same as the API service).
+  SecurityGroups:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Security groups for the scheduled Fargate task.
+  ScheduleExpression:
+    Type: String
+    Default: rate(5 minutes)
+  ScheduleState:
+    Type: String
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+Conditions:
+  HasPerfAggTaskDef: !Not [!Equals [!Ref PerfAggTaskDefinition, ""]]
+
+Resources:
+  PerfLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref PerfLogGroupName
+      RetentionInDays: !Ref PerfLogRetentionDays
+
+  # 给现有 API/worker 角色补：写性能日志 + 读 ops 聚合
+  ApiPerfPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: mistake-perf-emit-and-read
+      Roles: [!Ref ApiTaskRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${PerfLogGroupName}:*"
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${UploadsBucketName}/ops/*"
+
+  # 清洗任务角色：读性能日志 + 写 ops 聚合
+  PerfAggTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-perfagg-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: aggregate-perf
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:FilterLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${PerfLogGroupName}:*"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${UploadsBucketName}/ops/*"
+
+  # EventBridge 定时把 perfagg 作为一次性 Fargate 任务拉起
+  ScheduleRole:
+    Type: AWS::IAM::Role
+    Condition: HasPerfAggTaskDef
+    Properties:
+      RoleName: !Sub "${AppName}-perfagg-schedule-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: run-perfagg
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Ref PerfAggTaskDefinition
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt PerfAggTaskRole.Arn
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mistake-ecs-exec-role"
+                Condition:
+                  StringLike: { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+
+  PerfAggSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasPerfAggTaskDef
+    Properties:
+      Name: !Sub "${AppName}-perfagg"
+      Description: Runs the perf log cleaning task on a schedule.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: !Ref ScheduleState
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${Cluster}"
+        RoleArn: !GetAtt ScheduleRole.Arn
+        EcsParameters:
+          TaskDefinitionArn: !Ref PerfAggTaskDefinition
+          LaunchType: FARGATE
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              Subnets: !Ref Subnets
+              SecurityGroups: !Ref SecurityGroups
+              AssignPublicIp: ENABLED
+
+Outputs:
+  PerfLogGroupName:
+    Value: !Ref PerfLogGroupName
+  PerfAggTaskRoleArn:
+    Value: !GetAtt PerfAggTaskRole.Arn

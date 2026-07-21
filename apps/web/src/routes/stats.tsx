@@ -128,6 +128,18 @@ function StatsComponent() {
         </Link>
       )}
 
+      {/* 性能面板入口（运维） */}
+      {IS_ADMIN && (
+        <Link
+          to="/ops"
+          className="mb-6 flex items-center rounded-[16px] border border-[var(--c-border)] bg-white px-5 py-5"
+        >
+          <span className="text-sm font-semibold">性能面板</span>
+          <span className="ml-4 flex-1 text-[11px] text-[var(--c-muted)]">接口请求量 · 延迟 p95 · 错误率</span>
+          <span className="text-[18px] text-[var(--c-muted)]">›</span>
+        </Link>
+      )}
+
       {/* 连续天数 */}
       <div className="flex items-center gap-6 rounded-[16px] bg-[var(--c-dark)] p-6">
         <span className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-[14px] bg-[var(--c-yellow)] text-[24px] text-[var(--c-dark)]">

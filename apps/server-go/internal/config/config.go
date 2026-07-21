@@ -38,6 +38,15 @@ type Config struct {
 	SQSMaxReceiveCount   int32
 	AppVersion           string
 	BuildTime            string
+
+	// 性能 SDK 与 /ops 清洗
+	PerfEnabled      bool
+	PerfLogGroup     string // CloudWatch 性能日志组
+	PerfFlushSeconds int
+	PerfLocalDir     string // 本地 JSONL 目录（非 s3 模式）
+	OpsWindowMinutes int    // 清洗聚合窗口
+	OpsLocalDir      string // 本地清洗产物目录
+	OpsS3Key         string // S3 清洗产物 key
 }
 
 func Load() *Config {
@@ -66,6 +75,13 @@ func Load() *Config {
 		SQSMaxReceiveCount:   envInt32("SQS_MAX_RECEIVE_COUNT", 3),
 		AppVersion:           env("APP_VERSION", "dev"),
 		BuildTime:            env("BUILD_TIME", "unknown"),
+		PerfEnabled:          envBool("PERF_ENABLED", true),
+		PerfLogGroup:         env("PERF_LOG_GROUP", "/mistake/perf"),
+		PerfFlushSeconds:     int(envInt32("PERF_FLUSH_SECONDS", 5)),
+		PerfLocalDir:         env("PERF_DIR", "perf_logs"),
+		OpsWindowMinutes:     int(envInt32("OPS_WINDOW_MINUTES", 5)),
+		OpsLocalDir:          env("OPS_DIR", "ops_data"),
+		OpsS3Key:             env("OPS_S3_KEY", "ops/aggregates/latest.json"),
 	}
 	if abs, err := filepath.Abs(c.UploadDir); err == nil {
 		c.UploadDir = abs

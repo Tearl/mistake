@@ -18,6 +18,7 @@ import (
 	"mistakeserver/internal/db"
 	"mistakeserver/internal/handlers"
 	"mistakeserver/internal/messaging"
+	"mistakeserver/internal/perf"
 	"mistakeserver/internal/recognition"
 	"mistakeserver/internal/storage"
 	"mistakeserver/internal/worker"
@@ -27,6 +28,14 @@ func main() {
 	cfg := config.Load()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// 清洗任务：读性能日志聚合成 /ops 产物后退出，不需要数据库。
+	if cfg.AppMode == "perfagg" {
+		if err := runPerfAggregation(ctx, cfg); err != nil {
+			log.Fatalf("perf aggregation: %v", err)
+		}
+		return
+	}
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -92,12 +101,27 @@ func main() {
 		log.Fatalf("unsupported APP_MODE %q", cfg.AppMode)
 	}
 
-	srv := handlers.New(cfg, pool, aiClient, store, publisher, processor)
+	opsStore, err := newOpsStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("init ops store: %v", err)
+	}
+	srv := handlers.New(cfg, pool, aiClient, store, publisher, processor, opsStore)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware(cfg.CORSOrigins()))
+
+	// 性能 SDK：中间件采集每请求指标，后台每 5 秒批量落地。
+	if cfg.PerfEnabled {
+		sink, sinkErr := newPerfSink(ctx, cfg)
+		if sinkErr != nil {
+			log.Fatalf("init perf sink: %v", sinkErr)
+		}
+		collector := perf.NewCollector(sink, time.Duration(cfg.PerfFlushSeconds)*time.Second)
+		r.Use(perf.Middleware(collector))
+		go collector.Run(ctx)
+	}
 
 	// Liveness does not touch dependencies; readiness verifies the database.
 	r.Get("/health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -144,6 +168,7 @@ func main() {
 		r.Post("/similar", srv.Similar)
 		r.Post("/export", srv.Export)
 		r.Get("/cloudmap-hello", srv.CloudMapHello) // 作业二：ECS 经 Cloud Map 发现并调 Lambda
+		r.Get("/ops/summary", srv.OpsSummary)       // 性能面板：读清洗任务最新聚合
 	})
 
 	// 本地模式：静态提供上传的图片（s3 模式由 S3 直接提供，无此路由）

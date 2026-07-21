@@ -14,6 +14,7 @@ import (
 	"mistakeserver/internal/config"
 	"mistakeserver/internal/db"
 	"mistakeserver/internal/messaging"
+	"mistakeserver/internal/perf"
 	"mistakeserver/internal/recognition"
 	"mistakeserver/internal/storage"
 )
@@ -26,6 +27,7 @@ type Server struct {
 	Store       storage.Storage
 	Publisher   messaging.Publisher
 	Recognition *recognition.Processor
+	OpsStore    perf.SummaryStore // 性能清洗产物的读取源（/api/ops/summary）
 }
 
 func New(
@@ -35,10 +37,11 @@ func New(
 	store storage.Storage,
 	publisher messaging.Publisher,
 	processor *recognition.Processor,
+	opsStore perf.SummaryStore,
 ) *Server {
 	return &Server{
 		Cfg: cfg, Pool: pool, Q: db.New(pool), AI: aiClient, Store: store,
-		Publisher: publisher, Recognition: processor,
+		Publisher: publisher, Recognition: processor, OpsStore: opsStore,
 	}
 }
 

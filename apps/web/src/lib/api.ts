@@ -116,6 +116,37 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface OpsRouteStat {
+  route: string;
+  count: number;
+  errors: number;
+  errorRate: number;
+  p50: number;
+  p90: number;
+  p99: number;
+  max: number;
+  avg: number;
+}
+
+export interface OpsBucket {
+  minute: number;
+  count: number;
+  errors: number;
+}
+
+export interface OpsSummary {
+  available?: boolean; // false 表示清洗任务尚未产出
+  windowStart?: number;
+  windowEnd?: number;
+  generatedAt?: number;
+  totalRequests?: number;
+  totalErrors?: number;
+  errorRate?: number;
+  overallP95?: number;
+  routes: OpsRouteStat[];
+  timeline: OpsBucket[];
+}
+
 export const api = {
   listMistakes(subject = "", limit?: number): Promise<Mistake[]> {
     const q = new URLSearchParams();
@@ -150,6 +181,9 @@ export const api = {
   },
   admin(): Promise<AdminData> {
     return req<AdminData>("/api/admin");
+  },
+  opsSummary(): Promise<OpsSummary> {
+    return req<OpsSummary>("/api/ops/summary");
   },
   async upload(file: File): Promise<{ imageFileID: string }> {
     const form = new FormData();
