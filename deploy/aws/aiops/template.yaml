@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AI Ops agent for mistake — diagnoses CloudWatch alarms and proactive scans with Qwen, files GitHub issues.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: mistake
+  CodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the built agent zip.
+  CodeS3Key:
+    Type: String
+    Description: S3 key of the agent zip (e.g. aiops/agent-<sha>.zip).
+  AlarmTopicArn:
+    Type: String
+    Description: SNS alarm topic the agent subscribes to (mistake-synthetics-AlarmTopic-*).
+  GitHubRepo:
+    Type: String
+    Default: Tearl/mistake
+  QueueUrl:
+    Type: String
+    Description: Recognition SQS queue URL.
+  DlqUrl:
+    Type: String
+    Description: Recognition DLQ URL.
+  AlarmNames:
+    Type: CommaDelimitedList
+    Default: "mistake-prod-api-failed,mistake-recognition-dlq-not-empty,mistake-recognition-queue-oldest-message,mistake-api-target-5xx,mistake-api-latency-p95"
+  LogGroupToInspect:
+    Type: String
+    Default: /ecs/mistake
+  DashScopeKeyParam:
+    Type: String
+    Default: /mistake/DASHSCOPE_API_KEY
+  GitHubTokenParam:
+    Type: String
+    Default: /mistake/GITHUB_TOKEN
+  ScheduleExpression:
+    Type: String
+    Default: rate(30 minutes)
+  ScheduleState:
+    Type: String
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+
+Resources:
+  AgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AppName}-aiops-agent"
+      RetentionInDays: !Ref LogRetentionDays
+
+  AgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-aiops-agent-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: read-ops-context
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:GetMetricData
+                  - ecs:DescribeServices
+                Resource: "*"
+              - Effect: Allow
+                Action: logs:FilterLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupToInspect}:*"
+              - Effect: Allow
+                Action: sqs:GetQueueAttributes
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${AppName}-recognition"
+                  - !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${AppName}-recognition-dlq"
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DashScopeKeyParam}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GitHubTokenParam}"
+
+  AgentFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AgentLogGroup
+    Properties:
+      FunctionName: !Sub "${AppName}-aiops-agent"
+      Description: Diagnoses ops signals and files GitHub issues. Read-only, never mutates prod.
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt AgentRole.Arn
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables:
+          LOG_GROUP: !Ref LogGroupToInspect
+          ECS_CLUSTER: !Ref AppName
+          ECS_SERVICE: !Ref AppName
+          SQS_QUEUE_URL: !Ref QueueUrl
+          SQS_DLQ_URL: !Ref DlqUrl
+          ALARM_NAMES: !Join [",", !Ref AlarmNames]
+          MODEL: qwen-plus
+          GITHUB_REPO: !Ref GitHubRepo
+          DASHSCOPE_KEY_PARAM: !Ref DashScopeKeyParam
+          GITHUB_TOKEN_PARAM: !Ref GitHubTokenParam
+
+  # 触发 1：SNS 告警 -> Agent
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopicArn
+      Protocol: lambda
+      Endpoint: !GetAtt AgentFunction.Arn
+
+  AllowSnsInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AgentFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlarmTopicArn
+
+  # 触发 2：EventBridge 定时主动巡检 -> Agent
+  ScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-aiops-schedule-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-agent
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AgentFunction.Arn
+
+  ScanSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AppName}-aiops-scan"
+      Description: Proactive health scan for the mistake service.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: !Ref ScheduleState
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt AgentFunction.Arn
+        RoleArn: !GetAtt ScheduleRole.Arn
+        Input: '{"source":"scheduled-scan"}'
+
+  # 自监控：Agent 自己报错也要有人知道
+  AgentErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-aiops-agent-errors"
+      AlarmDescription: The AI Ops agent Lambda itself is failing.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AgentFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+Outputs:
+  AgentFunctionArn:
+    Value: !GetAtt AgentFunction.Arn
+  AgentRoleArn:
+    Value: !GetAtt AgentRole.Arn
