@@ -248,7 +248,18 @@ Resources:
           const checkHealth = async (baseUrl) => {
             const result = await requestText(new URL("/health", baseUrl));
             assert2xx(result, "health");
-            if (result.body.trim() !== "ok") {
+            const body = result.body.trim();
+            // /health returns JSON {"status":"ok"} (readiness); older builds
+            // returned plain "ok". Accept either so the check survives both.
+            let healthy = body === "ok";
+            if (!healthy) {
+              try {
+                healthy = JSON.parse(body).status === "ok";
+              } catch (_) {
+                healthy = false;
+              }
+            }
+            if (!healthy) {
               throw new Error("health returned an unexpected body");
             }
             log("info", "step_passed", {
